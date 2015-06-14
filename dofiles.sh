@@ -10,9 +10,9 @@ for fname in *.jpg;
    DF=$(date -d @$D '+%Y%m%d_%H%M%S')    # formatted creation date/time
    mv $fname pics/"${PREFIX}_${DF}_${fname}"  # add date_time to filename
  done
-tail -500 /home/pi/lidar/LIDAR-log2.csv > /home/pi/lidar/pics/LIDAR.txt
+tail -500 /home/pi/Lidar/LIDAR-log2.csv > /home/pi/Lidar/pics/LIDAR.txt
 
 #sudo killall sitecopy
 # remove JPEG files older than this many minutes
-find /home/pi/lidar/pics/*.jpg -mmin +860 -exec rm {} \;
-/usr/bin/sitecopy -u cam1   # upload files to remote user-facing website
+find /home/pi/Lidar/pics/*.jpg -mmin +860 -exec rm {} \;
+/usr/bin/sitecopy -u cam2   # upload files to remote user-facing website
