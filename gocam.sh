@@ -1,7 +1,9 @@
 #!/bin/bash
 # gocam.sh   start serial logger & save raspistill PID for cross-process signalling
 
-/home/pi/lidar/dofiles.sh
+cd /mnt/usb1/pics
+./dofiles.sh
+#/home/pi/lidar/dofiles.sh
 sudo killall raspistill
 sudo killall serlog1.py
 
