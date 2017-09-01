@@ -1,7 +1,8 @@
 // FFT to select freq. bins from signal on Teensy 3.2 pin A2 (ADC input)
 // Set OUT_ALARM pin high if signal in some freq. bins over threshold
 // Thanks to Teensy forum users: neutronned and Frank B.
-// by J.Beale 27-AUG-2017  T3.2 96 MHz Faster
+// Tuned for signal from HB100 (10.525 GHz doppler radar)
+// by J.Beale 31-AUG-2017  T3.2 96 MHz Faster
 
 #include <Audio.h>
 
@@ -15,24 +16,33 @@ AudioConnection  patchCord1(adc1, myFFT);
 #define LED1 (13)       // onboard signal LED
 #define OUT_ALARM (3)   // alarm signal (motion detected)
 #define BINS 15         // how many separate frequency bins to work with
-// #define MOTION_THRESH (10)  // sum of alarm channels exceeding this value = motion detect
+#define BIN_CUTOFF (3)    // ignore bins below this value
+//#define MOTION_THRESH (10)  // sum of alarm channels reaches this value = motion detect
 #define MOTION_THRESH (5)  // sum of alarm channels exceeding this value = motion detect
-#define DECRATIO (5)    // decimation ratio (data processed / printed out)
+#define PEAK_THRESH (4)  // largest bin must reach this value
+#define DECRATIO (4)    // decimation ratio (data processed / printed out)
+
+#define UC unsigned char
 
 float level[BINS];  // frequency bins, current smoothed value
 float avg[BINS];  // freq bins, long-term average
-unsigned char alarm[BINS];  // by what factor each bin exceeds threshold (0 = no alarm)
+UC alarm[BINS];  // by what factor each bin exceeds threshold (0 = no alarm)
+UC hist[BINS];   // history buffer for early (pre-printout) motion alarm values
+
 int sumAlarm;  // sum of all alarm[i] bins, 0 if no alarm
 int iMax;      // index of bin with maximum 'Alarm' value
 boolean motion;  // true if motion detected by alarm sum > MOTION_THRESH
 boolean motionOld;  // motion value at previous timestep
+boolean firstPrint; // if this is the first line of motion data printed out
 int runLength;   // for how many consecutive readings "motion" has been detected
 
 static float fa = 0.1;  // smoothing fraction for low-pass filter
 static float fb = 0.0005;  // smoothing fraction for long-term avg filter
-static float aThresh = 0.17;      // amount by which current value must exceed long-ter avg. for alarm
+// static float aThresh = 0.17;      // amount by which current value must exceed long-ter avg. for alarm
+static float aThresh = 0.3;      // amount by which current value must exceed long-ter avg. for alarm
 
-int loops = 0;   // how many times through loop
+unsigned int loops = 0;   // how many times through processing loop
+unsigned int pcnt = 0;  // how many times through printout loop
 
 void setDACFreq(int freq) {  // change sampling rate of internal ADC and DAC
 const unsigned config = PDB_SC_TRGSEL(15) | PDB_SC_PDBEN | PDB_SC_CONT | PDB_SC_PDBIE | PDB_SC_DMAEN;
@@ -75,7 +85,7 @@ int i;
   SERPORT.println();
   // SERPORT.print("# log(10.0) = ");
   // SERPORT.println(log(10.0),5);
-  SERPORT.print("# Doppler Microwave FFT on Teensy 3.2 27-AUG-2017");
+  SERPORT.print("# Doppler Microwave FFT on Teensy 3.2 ver 1.22 28-AUG-2017");
   for (i=0; i<8; i++) {
     delay(1000);
     SERPORT.print(".");
@@ -86,6 +96,7 @@ int i;
   digitalWrite(LED1, false);
   digitalWrite(OUT_ALARM, false);
   runLength = 0;
+  firstPrint = false;
 
 
   for (i = 0; i<4; i++) do {} while (!myFFT.available());  // wait for FFT values to be ready  
@@ -123,6 +134,7 @@ void updateLevel(float f) {
     level[14] = ((1.0-f)*level[11]) + f * (myFFT.read(376, 511) * 4 * A_GAIN);
 }
 
+// ===================================================================================
 // parameter f is long-term smoothing fraction (f very small => very long-term avg.)
 void updateAverage(float f) {   // find long-term avg, and "alarm" bins
 float afac;
@@ -140,54 +152,72 @@ float maxVal;
         iMax = i;
       }
       
-      if (i > 1) 
-        sumAlarm += afac;         // sum: ignore first 2 bins, and don't clamp at '9'
+      if (i >= BIN_CUTOFF) 
+        sumAlarm += afac;         // sum: ignore first n bins (bkgnd noise), and don't clamp at '9'
       if (afac > 9) afac = 9;
       alarm[i] = afac;
     }
     motionOld = motion;  // remember value from previous timestep
-    if (sumAlarm >= MOTION_THRESH) {
+    if ((sumAlarm >= MOTION_THRESH) && (maxVal >= PEAK_THRESH) && (iMax >= BIN_CUTOFF) ) {  // motion detected
       motion = true;
       runLength++;
-    } else {
+    } else {  // motion not currently detected
+      if ((motion) && (runLength > (2*DECRATIO)) )  // just ending an event
+        SERPORT.println();  // leave blank line to separate events
       motion = false;
+      firstPrint = true;
       runLength = 0;
     }
 }
 
 char buf[20];
+// ===================================================================================
 void loop() {
+  int i;
+  
   if (myFFT.available()) {
-    updateLevel(fa);  // get current smoothed frequency values
-    updateAverage(fb);    // get long-term-aveage values
+    updateLevel(fa);      // get current smoothed frequency values
+    updateAverage(fb);    // get long-term-average values
 
     digitalWrite(OUT_ALARM, motion);
     // digitalWrite(LED1, motion);  // onboard LED current adds noise?
-
-    if ((motion) && (runLength > (2*DECRATIO)) && ((loops++)%DECRATIO == 0)) {
-      for (int i=0; i<BINS; i++) {
-        SERPORT.print(alarm[i]);
-        SERPORT.print(",");
-      }
-     SERPORT.print("  ");  // extra space for separation
-     sprintf(buf,"%02d, ",runLength/DECRATIO);
-     SERPORT.print(buf);
-     sprintf(buf,"%03d, ",sumAlarm);
-     SERPORT.print(buf);
-     
-     sprintf(buf,"%d, ",iMax);
-     SERPORT.print(buf);
-     for (int i=0; i<BINS; i++) {
-      SERPORT.print(level[i]);
-      if (i < (BINS-1)) SERPORT.print(",");
-     }
-     SERPORT.println();
-    }
+    if ((loops++)%DECRATIO == 0) {
+      pcnt++;  // print-loop counter
+      
+      if (motion) {
+        if ( runLength > (2*DECRATIO) )  {
+          if (firstPrint) {  // if first line, also print previous saved line
+            firstPrint = false;
+            for (i=0; i<BINS; i++) {
+              SERPORT.print(hist[i]);
+              SERPORT.print(",");
+            }
+            SERPORT.println();            
+          }
+          for (i=0; i<BINS; i++) { // print alarm indexes
+            SERPORT.print(alarm[i]);
+            SERPORT.print(",");
+          }
+         SERPORT.print("  "); sprintf(buf,"%02d, ",runLength/DECRATIO); SERPORT.print(buf);  
+         sprintf(buf,"%03d, ",sumAlarm);  SERPORT.print(buf);
+         sprintf(buf,"%d, ",iMax);  SERPORT.print(buf);
+         for (i=0; i<BINS; i++) {
+          SERPORT.print(level[i]);
+          if (i < (BINS-1)) SERPORT.print(",");
+         }
+         SERPORT.println();
+        } // if (runlength > 2*dec..)
+       
+        else { // motion, but not yet 2x samples
+               // firstPrint = true;
+               for (i=0; i<BINS; i++) {         
+                   hist[i] = alarm[i];  // back up for possible printout
+               }
+             } // else
+      } // if (motion)
+    } // if ((loops++ ...))
     
-    // if ((motionOld && !motion) && (runLength >= DECRATIO)) {
-    //   SERPORT.println(runLength);
-    //  }
-  }
+  } // if (myFFT.available...)
   
 } // end main loop()
 
