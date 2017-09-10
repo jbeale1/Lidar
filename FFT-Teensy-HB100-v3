@@ -2,7 +2,9 @@
 // Set OUT_ALARM pin high if signal in some freq. bins over threshold
 // Thanks to Teensy forum users: neutronned and Frank B.
 // Tuned for signal from CDM324  (24GHz doppler sensor)
+// 2017-09-10: no false detect indoors in ~ 24 hours
 // by J.Beale 09-SEP-2017  T3.2 96 MHz Faster
+
 
 #include <Audio.h>
 
@@ -388,4 +390,3 @@ void loop() {
   } // if (myFFT.available...)
   
 } // end main loop()
-
