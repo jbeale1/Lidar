@@ -3,7 +3,7 @@
 // Thanks to Teensy forum users: neutronned and Frank B.
 // Tuned for signal from CDM324  (24GHz doppler sensor)
 // 2017-09-10: no false detect indoors in ~ 24 hours
-// by J.Beale 09-SEP-2017  T3.2 96 MHz Faster
+// by J.Beale 10-SEP-2017  T3.2 96 MHz Faster
 
 
 #include <Audio.h>
@@ -24,7 +24,8 @@ AudioConnection  patchCord1(adc1, myFFT);
 #define PEAK_THRESH (4)  // largest bin must reach this value
 #define DECRATIO (8)    // decimation ratio (data processed / printed out)
 #define MINRUN (15)    // minimum # of cycles of motion before validated (displayed)
-#define MINSTOP (2)    // minimum # of cycles of motion before validated (displayed)
+#define MINSTOP (5)    // minimum # of cycles of motion before validated (displayed)
+#define CB_LEN (20)    // number of elements in circular buffer
 
 #define UC unsigned char
 #define UI unsigned int
@@ -38,22 +39,31 @@ AudioConnection  patchCord1(adc1, myFFT);
    ({ __typeof__ (a) _a = (a); \
        __typeof__ (b) _b = (b); \
      _a < _b ? _a : _b; })  // this form used to avoid a double-evaluation problem
+
      
 #define FBINS 512    // full length of frequency data from 1024-point FFT
 #define MINBOUND -100 // what log(0) becomes; should be at the noise floor, whatever that is
 
-#define HISTBINS 50    // how many bins in background frequency histogram
+// #define HISTBINS 50    // how many bins in background frequency histogram
 #define FSCALEFAC 2  // histogram index scaling factor
 #define FFSCALE (1000) // scaling factor for full FFT spectrum results
 #define FFTHRESH (0.26) // full FFT element must exceed this threshold for motion signal
 #define LOGSCALE (8.6859)  // scale factor converting ln(x) to 20*log10(x)  (dB units)
 
-//float level[BINS];  // frequency bins, current smoothed value
-//float avg[BINS];  // freq bins, long-term average
+// fslice is one element describing frequency spectrum with a few float values, at one timeslice
+struct fslice {
+  UI  len;  // how many time slices since motion started
+  float fCenter;  // center-of-mass of frequency distribution
+  float moment;   // proportional to spread of detected (above-thresh) frequencies
+  float mag;  // magnitude of detected signal
+} cbuf[CB_LEN];  // circular buffer of timeslice info
+
+int CB_head=CB_LEN;
+int CB_tail=0;
+int CB_elems=0;
+
 UC alarm[BINS];  // by what factor each bin exceeds threshold (0 = no alarm)
-// UC hist[BINS];   // history buffer for early (pre-printout) motion alarm values
 char buf[20];    // temporary string buffer for print output
-// float dbuff[20][512];  // FFT result history buffer. (512 x 4 bytes/float) = 2k bytes of RAM
 int didx=0;   // index into history buffer
 UI ms; // current value of milliseconds
 UI oldms = 0;  // previous loop value of msec
@@ -66,11 +76,18 @@ int iMax;      // index of bin with maximum 'Alarm' value
 boolean motion = false;  // true if motion detected by alarm sum > MOTION_THRESH
 boolean motionOld;  // motion value at previous timestep
 boolean event = false;  // if currently in an event
+boolean pevent = false;  // if we are currently printing out an event
 boolean lastEvent = false; // if last cycle was an event
 boolean firstPrint; // if this is the first line of motion data printed out
-unsigned int runLength = 0;   // how many readings in a row "motion" has been detected
-unsigned int stopLength = 0;  // how many readings in a row there's been no motion
-unsigned int lastRun = 0;     // runlength duration of previous event 
+UI runLength = 0;   // how many readings in a row "motion" has been detected
+UI stopLength = 0;  // how many readings in a row there's been no motion
+UI lastRun = 0;     // runlength duration of previous event 
+UI maxRun = 0;                // actual length of this event
+UI printLen = 0;    // how many buffered lines of data printed for this event
+float maxAmp=0;  // peak amplitude of motion event
+float domFreq=0;  // center frequency at moment of peak amplitude of motion event
+UI domStep=0;  // timestep offset at moment of peak amplitude of motion event
+
 
 static float fa = 0.1;  // smoothing fraction for low-pass filter
 static float fb = 0.0005;  // smoothing fraction for long-term avg filter
@@ -108,7 +125,7 @@ float fTotal;      // sum of all FFT elements
 float fSigTotal;   // sum of all detected-motion signals (above background average)
 float fSigSM;      // smoothed fSigTotal
 
-UC fHist[HISTBINS][FBINS];  // histogram of freq data to establish background thresholds
+// UC fHist[HISTBINS][FBINS];  // histogram of freq data to establish background thresholds
 // unsigned char fHist[32][512];  // histogram of freq data to establish background thresholds
 
 
@@ -124,7 +141,47 @@ const unsigned config = PDB_SC_TRGSEL(15) | PDB_SC_PDBEN | PDB_SC_CONT | PDB_SC_
 
 #define FSTEP(a,b,f) ( (1.0-f)*a + (f*b) )  // interpolate between (a,b) by fraction f
 // =========================================================================
+void pbuf()  // print out all the elements of circular buffer
+{
+  char buf[80];
+  
+    sprintf(buf,"elems:%d head:%d tail: %d  ",CB_elems, CB_head, CB_tail);
+    SERPORT.print(buf);
+    for (int i =0; i<CB_LEN; i++) {
+      sprintf(buf,"%d:%d,%4.2f ",i,cbuf[i].len,cbuf[i].mag);
+      SERPORT.print(buf);
+    }
+    SERPORT.println();
+}
 
+void push(fslice a) // push one element into head of buffer
+{
+    if (++CB_head >= CB_LEN) CB_head=0; // max ptr is (CB_LEN-1)
+    if (CB_elems == CB_LEN) {
+      if (++CB_tail >= (CB_LEN)) CB_tail=0; // max ptr is (CB_LEN-1)
+    }
+    if (CB_elems < CB_LEN) CB_elems++;  // add one to total count
+    cbuf[CB_head].len = a.len;
+    cbuf[CB_head].fCenter = a.fCenter;
+    cbuf[CB_head].moment = a.moment;
+    cbuf[CB_head].mag = a.mag;
+}
+
+
+int pop()  // pop one element from rear of buffer. Returns an INDEX into cbuf[i] array
+{
+    int oldtail;
+    if (CB_elems == 0) {
+      return -1; // error to pop empty buffer
+    }
+    
+    oldtail = CB_tail;
+    CB_elems--;
+    if (++CB_tail > (CB_LEN-1)) CB_tail = 0;
+    return oldtail;
+} // pop()
+
+// =========================================================================
 void updateAvgFull(float frac) {
 
 // parameter 'frac' is long-term smoothing fraction (frac very small => very long-term avg.)
@@ -209,46 +266,6 @@ void updateAvgFull(float frac) {
 } // end updateAvgFull()
 // =========================================================================
 
-void initHist() {
-  for (int i=0; i<HISTBINS; i++)
-    for (int j=0; j<FBINS; j++)
-      fHist[HISTBINS][FBINS]=0;
-} // end initHist()
-
-void printHist() {  // print out histogram as PGM ASCII image
-  int i,j;
-
-  /*
-  SERPORT.println("P2");  
-  SERPORT.println("# SpectrumHistogram.pgm");  
-  SERPORT.print(FBINS);  SERPORT.print(" ");  
-  SERPORT.println(HISTBINS);  
-  SERPORT.println("255");  
-  for (i=0; i<HISTBINS; i++) {
-    for (j=0; j<FBINS; j++) {
-      SERPORT.print( fHist[i][j] );
-      SERPORT.print(" "); // for PGM file this must be whitespace, not a comma
-    }
-    SERPORT.println();
-  }
-  SERPORT.println("# END SpectrumHistogram.pgm");  
-*/
-
-  SERPORT.println();
-  // SERPORT.println("# Start fsig[]");
-  for (j=0; j<FBINS; j++) {
-    if (fsig[j] > 0) {
-      SERPORT.print( j );
-      SERPORT.print(",");
-      SERPORT.print( fsig[j] );
-      SERPORT.print(", ");
-    }
-  }
-
-  SERPORT.println();
-  //SERPORT.println("# ========================= ");
-
-} // printHist()
 
 
 // ==========================================
@@ -264,7 +281,6 @@ int i;
   AudioInterrupts();
   
   SERPORT.begin(19200);
-  initHist();
   
   digitalWrite(LED1, false);
   pinMode(LED1, OUTPUT);
@@ -277,15 +293,7 @@ int i;
   // SERPORT.print("# log(10.0) = ");
   // SERPORT.println(log(10.0),5);
   SERPORT.println("count,freq,spread,det,strength");
-  SERPORT.println("# CMD324 Doppler FFT on Teensy 3.2 ver 1.5 09-SEP-2017");
-  /*
-  for (i=0; i<8; i++) {
-    delay(1000);
-    SERPORT.print(".");
-  }
-  SERPORT.println();
-  SERPORT.print("# ");
-  */
+  SERPORT.println("# Doppler FFT Motion-Detect on Teensy 3.2 ver 1.6 10-SEP-2017");
   
   digitalWrite(LED1, false);
   digitalWrite(OUT_ALARM, false);
@@ -299,18 +307,15 @@ int i;
   updateAvgFull(1.0);
 
   SERPORT.print("# ");
-  for (i=0; i<100; i++) {  // do a few rounds of averaging
+  for (i=0; i<50; i++) {  // do a few rounds of averaging
     while (!myFFT.available());
     SERPORT.print(".");
-    // updateLevel(fa);  // start averaging frequency values 
-    // updateAverage(fa/2.0);  // start long-term averaging
     updateAvgFull(fa/2.0);  // start long-term averaging
   }
   SERPORT.println("");
   SERPORT.println("# Starting now");
 
   firstPrint = false;
-  // printData();           // starting values
   firstPrint = false;
   motionOld = false;
 
@@ -321,63 +326,84 @@ void loop() {
   int i;
   boolean tail = false;
   boolean mt;  // motion OR (tailend condition)
-
+  fslice a;    // struct holding current "now" timeslice parameters
+  char buf[80];  // temporary output string
   
   if (myFFT.available()) {
     ms = millis();
     dt = ms - oldms;  // how long one loop takes
     oldms = ms;
 
-    // updateLevel(fa);      // get current smoothed frequency values
-    // updateAverage(fb);    // get long-term-average values
     updateAvgFull(fb);    // do stats on long-term-average of every element in full spectrum
-
 
     // "motion detected" when (sigMag > 0)
     // float sigMag = LOGSCALE * MAX(-0.5+log(fSigTotal), 0);  // magnitude in dB
     float sigMag = LOGSCALE * MAX(-0.5+log(fSigSM), 0);  // * LOGSCALE gives magnitude in dB
+
+    a.len = runLength; // how many time slices since motion
+    a.fCenter = fCenterSM2;  // center of mass of detected signal in freq spectrum
+    a.moment = momentSM3;  // moment or "spread" of det. signal
+    a.mag = sigMag;  // magnitude (amplitude) of det.signal
+    push(a);  // save current timeslice data in circular buffer (whether any motion, or not)
+    // sprintf(buf,"%d,%d ",runLength,stopLength);
+    // SERPORT.print(buf); // DEBUG: show run,stop counts
+    // SERPORT.println();
     
     motion = (sigMag > 0) & (fCenter > 0);
     if (motion) {
-      stopLength = 0;
-      runLength++;
+      stopLength = 0;  // stopLength is 0 immediately upon any motion
+      runLength++;     // count how many timesteps this "run" of motion lasts
     } else {
-      // if ((runLength > 0) && (lastRun == 0))  lastRun = runLength;
-      stopLength++;
+      if (++stopLength > MINSTOP) {
+        if (runLength > MINRUN) maxRun = runLength;  // remember length of just-ended motion run
+        runLength = 0;  // ONLY PLACE runlength reset: after MINSTOP steps of no motion
+      }
     }
 
-    // if ( (motion && (runLength > MINRUN)) || (!motion && (stopLength < MINSTOP)) ) {
-    if ( motion && (runLength > MINRUN) ) {
+    if ( motion && (runLength > (MINRUN+2)) ) {
       event = true;
+      // SERPORT.print(runLength);
+      // SERPORT.print(", ");
     } else {
       event = false;
     }
+
+    if ( event == true ) {  // show data during motion, and X timesteps after
+      pevent = true;
+    } 
     
-    if (event == true) {
-//      SERPORT.print(" ");
-//      SERPORT.print(fiMax);  // index of max value over full FFT
-//      SERPORT.print(",");
-//      SERPORT.print(fMax);  //  max value over full FFT
-//      SERPORT.print(",");
+    if (pevent && (runLength ==0) && (printLen > maxRun+5)) {  // when to turn off printing
+      pevent = false;
+    }
 
-      SERPORT.print(runLength);  //  center of mass of spectrum
-      SERPORT.print(",");
-      SERPORT.print(fCenterSM2);  //  center of mass of spectrum
-      SERPORT.print(",");
-      SERPORT.print(momentSM3);  //  moment of inertia of signal
-      SERPORT.print(",");
-      SERPORT.print(momentSM4);  //  moment of inertia of signal
-      SERPORT.print(",");
-      SERPORT.print(sigMag,1);  //  log of total detected motion signal
-      // printHist();
-      SERPORT.println();
+    if (pevent) {  // show data during motion, and X timesteps after
+
+      printLen++;  // track how many timesteps we have printed out
+      int idx = pop(); // index into cbuf[] array of frequency slice data structures
+      float amp = cbuf[idx].mag; // signal magnitude at idx mark
+      if (amp > maxAmp) {  // if it's a new peak, remember magnitude & dominant frequency & time offset
+        maxAmp = amp;
+        domFreq = cbuf[idx].fCenter;
+        domStep = cbuf[idx].len;
+      }
+      
+      sprintf(buf,"%03d,%5.2f,%5.2f,%5.2f", cbuf[idx].len, cbuf[idx].fCenter,
+          cbuf[idx].moment, cbuf[idx].mag);      
+      SERPORT.print(buf);  //  center of mass of spectrum
+      SERPORT.println();  // blank line separates events
     } else {             // here we know (event == false)
-
+      // runLength = 0;
       if (lastEvent) {  // just finished previous event ?
         // SERPORT.println(runLength);
         lastRun = 0;  // flag to indicate already printed
+        sprintf(buf,"# Motion: %d, %d, %5.2f, %5.2f", maxRun, domStep, domFreq, maxAmp);
+        SERPORT.print(buf);
         SERPORT.println();  // blank line separates events
-        runLength = 0;
+        maxRun = 0;  // runlength of motion event
+        maxAmp=0;  // peak amplitude of motion event
+        domFreq=0;  // center frequency at moment of peak amplitude of motion event
+        domStep=0;  // timestep offset of peak amplitude
+        printLen = 0;  // ended this event printout
       }
     }
 
@@ -385,8 +411,9 @@ void loop() {
     digitalWrite(OUT_ALARM, motion);
     // digitalWrite(LED1, motion);  // onboard LED current adds noise?    
 
-    lastEvent = event;  // remember if we are in event, for next cycle
+    lastEvent = pevent;  // remember if we are now printing out event, for next cycle
   
   } // if (myFFT.available...)
   
 } // end main loop()
+
