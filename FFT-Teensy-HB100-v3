@@ -3,7 +3,7 @@
 // Thanks to Teensy forum users: neutronned and Frank B.
 // Tuned for signal from CDM324  (24GHz doppler sensor)
 // 2017-09-10: no false detect indoors in ~ 24 hours
-// by J.Beale 10-SEP-2017  T3.2 96 MHz Faster
+// by J.Beale 14-SEP-2017  T3.2 96 MHz Faster
 
 
 #include <Audio.h>
@@ -24,7 +24,7 @@ AudioConnection  patchCord1(adc1, myFFT);
 #define PEAK_THRESH (4)  // largest bin must reach this value
 #define DECRATIO (8)    // decimation ratio (data processed / printed out)
 #define MINRUN (15)    // minimum # of cycles of motion before validated (displayed)
-#define MINSTOP (5)    // minimum # of cycles of motion before validated (displayed)
+#define MINSTOP (20)    // max # of cycles of no-motion before reset
 #define CB_LEN (20)    // number of elements in circular buffer
 
 #define UC unsigned char
@@ -85,6 +85,7 @@ UI lastRun = 0;     // runlength duration of previous event
 UI maxRun = 0;                // actual length of this event
 UI printLen = 0;    // how many buffered lines of data printed for this event
 float maxAmp=0;  // peak amplitude of motion event
+float avgAmp=0;  // average amplitude of motion event
 float domFreq=0;  // center frequency at moment of peak amplitude of motion event
 UI domStep=0;  // timestep offset at moment of peak amplitude of motion event
 
@@ -95,6 +96,9 @@ static float fc = 0.3;     // smoothing fraction for center frequency
 static float fmom = 0.4;  // moment smoothing
 static float fmom2 = 0.35;  // moment smoothing
 static float fmag = 0.4;  // magnitude smoothing
+
+
+
 // static float aThresh = 0.17;      // amount by which current value must exceed long-ter avg. for alarm
 // static float aThresh = 0.3;      // amount by which current value must exceed long-ter avg. for alarm (HB100)
 static float aThresh = 0.20;      // amount by which current value must exceed long-ter avg. for alarm (CDM324)
@@ -112,6 +116,12 @@ int fiMax;           // index of peak value
 float fCenter;  // center of mass of distribution
 float fCenterSM1=0;  // center of mass of distribution
 float fCenterSM2=0;  // center of mass of distribution
+
+static float spMax = 40;  // accumulate avg freq when spread less than this
+static float magMin = 20; // accumulate avg freq when magnitude greater than this
+float freqAvg=0;     // average frequency of entire motion event
+int freqCount=0;         // count of how many freqAvg elements were summed
+
 float moment = 0;  // moment of inertial about the center of mass, of signal spectrum
 float momentSM = 0;  // smoothed version of moment of inertial
 float momentSM2 = 0;  // smoothed version of moment of inertial
@@ -292,8 +302,8 @@ int i;
 
   // SERPORT.print("# log(10.0) = ");
   // SERPORT.println(log(10.0),5);
-  SERPORT.println("count,freq,spread,det,strength");
-  SERPORT.println("# Doppler FFT Motion-Detect on Teensy 3.2 ver 1.6 10-SEP-2017");
+  SERPORT.println("count,freq,spread,strength");
+  SERPORT.println("# Doppler FFT Motion-Detect on Teensy 3.2 ver 1.62 14-SEP-2017");
   
   digitalWrite(LED1, false);
   digitalWrite(OUT_ALARM, false);
@@ -356,7 +366,7 @@ void loop() {
     } else {
       if (++stopLength > MINSTOP) {
         if (runLength > MINRUN) maxRun = runLength;  // remember length of just-ended motion run
-        runLength = 0;  // ONLY PLACE runlength reset: after MINSTOP steps of no motion
+        runLength = 0;  // reset runlength if too much time has passed since motion
       }
     }
 
@@ -372,7 +382,7 @@ void loop() {
       pevent = true;
     } 
     
-    if (pevent && (runLength ==0) && (printLen > maxRun+5)) {  // when to turn off printing
+    if (pevent && (stopLength > MINSTOP) && (printLen > maxRun+5)) {  // when to turn off printing
       pevent = false;
     }
 
@@ -386,6 +396,11 @@ void loop() {
         domFreq = cbuf[idx].fCenter;
         domStep = cbuf[idx].len;
       }
+      if (( cbuf[idx].mag > magMin) && (cbuf[idx].moment < spMax)) {
+        avgAmp += cbuf[idx].mag;
+        freqAvg += cbuf[idx].fCenter;
+        freqCount++;
+      }
       
       sprintf(buf,"%03d,%5.2f,%5.2f,%5.2f", cbuf[idx].len, cbuf[idx].fCenter,
           cbuf[idx].moment, cbuf[idx].mag);      
@@ -396,14 +411,23 @@ void loop() {
       if (lastEvent) {  // just finished previous event ?
         // SERPORT.println(runLength);
         lastRun = 0;  // flag to indicate already printed
-        sprintf(buf,"# Motion: %d, %d, %5.2f, %5.2f", maxRun, domStep, domFreq, maxAmp);
+        if (freqCount > 0) {
+          freqAvg /= freqCount;     // convert freq sum to average
+          avgAmp /= freqCount;      // convert amplitude sum to average
+        }
+        SERPORT.println("# maxRun, domStep, freqCount, domFreq, freqAvg, maxAmp, avgAmp");
+        sprintf(buf,"## %d, %d, %d, %5.2f, %5.2f, %5.2f, %5.2f", maxRun, domStep, freqCount, domFreq, freqAvg, maxAmp, avgAmp);
         SERPORT.print(buf);
         SERPORT.println();  // blank line separates events
         maxRun = 0;  // runlength of motion event
         maxAmp=0;  // peak amplitude of motion event
+        avgAmp=0;  // average amplitude of motion event
         domFreq=0;  // center frequency at moment of peak amplitude of motion event
         domStep=0;  // timestep offset of peak amplitude
         printLen = 0;  // ended this event printout
+        freqAvg=0;     // average frequency of entire motion event
+        freqCount=0;         // count of how many freqAvg elements were summed
+        runLength = 0;  // ONLY PLACE runlength reset: after event printout finished
       }
     }
 
