@@ -3,9 +3,7 @@
 //  Purpose: Log doppler data via serial port and save to file
 //  for Teensy 3.2 sending through FTDI-USB serial to Raspberry Pi
 //
-//  In this case the FTDI USB-Serial Tx line is not even connected to anything,
-//  but there is a nominally useless Tx char every loop in attempt to fix
-//  an apparent bug causing USB timeout after long (hours?) periods of
+//  There is an apparent bug causing USB timeout after long (hours?) periods of
 //  inactivity in this cheap (fake) ebay FTDI USB device.    
 //  When it does shut down, the end of `dmesg` looks like this:
 //  [49298.492956] ftdi_sio ttyUSB0: usb_serial_generic_read_bulk_callback - urb stopped: -32
@@ -185,9 +183,8 @@ set_blocking (fd, 1);                // set blocking
         if (fp == NULL) return -1;
       } // end if (i > 1)
     }
-    c = 0x20;  // ASCII space
-    write (fd, &c, 1);  // write one character - attempted bugfix for fake FTDI                                                                              USB chip
-
+    // c = 0x20;  // ASCII space
+    // write (fd, &c, 1);  // write one char. attempted bugfix for fake FTDI, but doesn't help
   } // while()
 
 } // main
