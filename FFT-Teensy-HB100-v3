@@ -4,13 +4,18 @@
 // Tuned for signal from CDM324  (24GHz doppler sensor)
 // 2017-09-10: no false detect indoors in ~ 24 hours
 // by J.Beale 14-SEP-2017  T3.2 96 MHz Faster
-
+// 09-OCT-2017  added peak frequency
 
 #include <Audio.h>
 
 AudioInputAnalog         adc1;       
 AudioAnalyzeFFT1024      myFFT;
+// AudioAnalyzeFFT256      myFFT;
 AudioConnection  patchCord1(adc1, myFFT);
+
+#define FBINS 512    // full length of frequency data from 1024-point FFT
+// #define FBINS 128    // full length of frequency data from 256-point FFT
+
 
 #define SERPORT Serial1
 
@@ -41,7 +46,6 @@ AudioConnection  patchCord1(adc1, myFFT);
      _a < _b ? _a : _b; })  // this form used to avoid a double-evaluation problem
 
      
-#define FBINS 512    // full length of frequency data from 1024-point FFT
 #define MINBOUND -100 // what log(0) becomes; should be at the noise floor, whatever that is
 
 // #define HISTBINS 50    // how many bins in background frequency histogram
@@ -53,10 +57,13 @@ AudioConnection  patchCord1(adc1, myFFT);
 // fslice is one element describing frequency spectrum with a few float values, at one timeslice
 struct fslice {
   UI  len;  // how many time slices since motion started
+  UI  fPeak;    // instantaneous peak frequency in this timeslice
   float fCenter;  // center-of-mass of frequency distribution
   float moment;   // proportional to spread of detected (above-thresh) frequencies
   float mag;  // magnitude of detected signal
-} cbuf[CB_LEN];  // circular buffer of timeslice info
+};
+
+fslice cbuf[CB_LEN];  // circular buffer of timeslice info
 
 int CB_head=CB_LEN;
 int CB_tail=0;
@@ -172,6 +179,7 @@ void push(fslice a) // push one element into head of buffer
     }
     if (CB_elems < CB_LEN) CB_elems++;  // add one to total count
     cbuf[CB_head].len = a.len;
+    cbuf[CB_head].fPeak = a.fPeak;
     cbuf[CB_head].fCenter = a.fCenter;
     cbuf[CB_head].moment = a.moment;
     cbuf[CB_head].mag = a.mag;
@@ -192,7 +200,10 @@ int pop()  // pop one element from rear of buffer. Returns an INDEX into cbuf[i]
 } // pop()
 
 // =========================================================================
-void updateAvgFull(float frac) {
+UI updateAvgFull(float frac) {
+
+UI i;  // loop index
+UI idxMax;  // index of maximum frequency
 
 // parameter 'frac' is long-term smoothing fraction (frac very small => very long-term avg.)
 
@@ -214,7 +225,7 @@ void updateAvgFull(float frac) {
   fTotal = 0;     // total signal in log space
   fSigTotal = 0;  // total detected (motion) signal
   fCenter = 0;
-  fiMax = 0;
+  idxMax = 0;   // index of peak frequency
   fMax = 0.0;
   for (int i=0; i<FBINS; i++) {
       fv = FFSCALE * myFFT.read(i);    
@@ -227,24 +238,16 @@ void updateAvgFull(float frac) {
       fSigTotal += fsignal;            // total detected signal (0 if all at or below average)
       
       fCenter += fsignal * ((float)i + 0.5);  // sum over all spectrum to find center-of-mass
-
-      /*
-      int j = fsignal * FSCALEFAC;  // very magical constant scale factor
-      if (j > (HISTBINS-1)) j=HISTBINS-1; // make sure not to exceed a valid array index value
-      // ---------------------------------------      
-      if (!motion && (fsignal>0)) {  // update frequency histogram of "motion signal"
-        if (fHist[j][i] < 255) fHist[j][i]++;  // histogram of freq data to establish background thresholds
-      }
-      // ---------------------------------------
-      */
-      
-       
-      if (fsig[i] > fMax) {   // have we found a new maximum?
+     
+      if (fsignal > fMax) {   // have we found a new maximum?
         fMax = fsig[i];
-        fiMax = i;
+        idxMax = i;
       }
-      fsig[i] = fsignal;  // save this "detected signal" element of the spectrum
+      fsig[i] = fsignal;  // replace original FFT data with "detected signal"
   } // end for (i..)
+
+  // SERPORT.println(fiMax);  // DEBUG output show peak frequency bin
+  
   fSigSM = FSTEP(fSigSM, fSigTotal, fmag); // smoothed version of signal magnitude
   if (fSigTotal > 0)
     fCenter /= (fSigTotal);  // this is the (non-integer) index value of "center of mass" of the spectrum
@@ -273,6 +276,7 @@ void updateAvgFull(float frac) {
   momentSM4 = momentSM3 - mombase;
   oldmv = momvel;
   oldmom3 = momentSM3;
+  return idxMax;
 } // end updateAvgFull()
 // =========================================================================
 
@@ -286,11 +290,12 @@ int i;
   AudioNoInterrupts();
   setDACFreq(11025);
   // setDACFreq(25245); // 11.025 kHz * (24.1/10.525) = 25.245 kHz
-  myFFT.windowFunction(AudioWindowHanning1024);
+  // myFFT.windowFunction(AudioWindowHanning1024);
+  // myFFT.windowFunction(AudioWindowHanning256); // the default
   // analogReference(EXTERNAL);  // set ADC voltage reference to 3.3V external
   AudioInterrupts();
   
-  SERPORT.begin(19200);
+  SERPORT.begin(57600);
   
   digitalWrite(LED1, false);
   pinMode(LED1, OUTPUT);
@@ -333,7 +338,8 @@ int i;
 
 // ===================================================================================
 void loop() {
-  int i;
+  UI i;
+  UI idxMax;
   boolean tail = false;
   boolean mt;  // motion OR (tailend condition)
   fslice a;    // struct holding current "now" timeslice parameters
@@ -344,13 +350,16 @@ void loop() {
     dt = ms - oldms;  // how long one loop takes
     oldms = ms;
 
-    updateAvgFull(fb);    // do stats on long-term-average of every element in full spectrum
+    idxMax = updateAvgFull(fb);    // do stats on long-term-average of every element in full spectrum
+
+    // SERPORT.println(idxMax);  // DEBUG output show peak frequency bin  (non-zero here)
 
     // "motion detected" when (sigMag > 0)
     // float sigMag = LOGSCALE * MAX(-0.5+log(fSigTotal), 0);  // magnitude in dB
     float sigMag = LOGSCALE * MAX(-0.5+log(fSigSM), 0);  // * LOGSCALE gives magnitude in dB
 
     a.len = runLength; // how many time slices since motion
+    a.fPeak = idxMax; // index of peak frequency
     a.fCenter = fCenterSM2;  // center of mass of detected signal in freq spectrum
     a.moment = momentSM3;  // moment or "spread" of det. signal
     a.mag = sigMag;  // magnitude (amplitude) of det.signal
@@ -402,7 +411,7 @@ void loop() {
         freqCount++;
       }
       
-      sprintf(buf,"%03d,%5.2f,%5.2f,%5.2f", cbuf[idx].len, cbuf[idx].fCenter,
+      sprintf(buf,"%03d,%03d,%5.2f,%5.2f,%5.2f", cbuf[idx].len, cbuf[idx].fPeak, cbuf[idx].fCenter,
           cbuf[idx].moment, cbuf[idx].mag);      
       SERPORT.print(buf);  //  center of mass of spectrum
       SERPORT.println();  // blank line separates events
@@ -440,4 +449,3 @@ void loop() {
   } // if (myFFT.available...)
   
 } // end main loop()
-
