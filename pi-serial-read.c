@@ -86,8 +86,6 @@ set_blocking (int fd, int should_block)
                 error_message ("error %d setting term attributes", errno);
 }
 
-
-
 // ==============================================================
 int main(int argc, char** argv) {
 
@@ -115,7 +113,6 @@ strftime(tod, sizeof tod, "%Y%m%d_%H%M%S.csv",tm);
 strcpy(fname,BASENAME);
 strncat(fname,tod,strlen(tod));
 printf("Opening %s\n",fname);
-// return 0;
 
 fp = fopen(fname,"w");
 if (fp == NULL) return -1;
@@ -129,7 +126,6 @@ if (fd == 0)
 }
 
 set_interface_attribs (fd, B57600, 0);  // set speed to 57600 bps, 8N1 (no parity)
-// set_blocking (fd, 0);                // set no blocking
 set_blocking (fd, 1);                // set blocking
 
   char c;
@@ -141,8 +137,6 @@ set_blocking (fd, 1);                // set blocking
     do {
         n = read (fd, &c, 1);  // read one character
         if (n > 0) {
-           // putchar(c);
-           // printf("%02x ",c);
            buf[i++] = c;
         }
     } while (c != 0x0a && n > 0);
@@ -151,13 +145,6 @@ set_blocking (fd, 1);                // set blocking
     if (i > 1) { // ignore single-character lines (eg. single '0a')
 
       if ( (buf[0]=='#') && (buf[1]=='#') ) doflush=1;  // write to file at end of each event
-
-      // printf("Line: %s\n",buf);
-
-      //time (&rawtime);
-      //timeinfo = localtime (&rawtime);
-      //strftime (tbuf,80,"%F %T",timeinfo);
-
 
       gettimeofday(&t2, NULL);
       millisec = lrint(t2.tv_usec/1000.0); // round to nearest millisec
@@ -168,18 +155,12 @@ set_blocking (fd, 1);                // set blocking
 
       timeinfo = localtime(&t2.tv_sec);
       strftime (tbuf, 80, "%Y-%m-%d %H:%M:%S",timeinfo);
-      fprintf(fp,"%s.%03d, %s",tbuf,millisec,buf);   // write to file
-
-      // fprintf(fp,"%s, %d, %s",tbuf,strlen(buf),buf);   // write to file
-      // fprintf(fp,"%s, %s",tbuf,buf);   // write to file
+      fprintf(fp,"%s.%03d, %s",tbuf,millisec,buf);   // write to file including milliseconds
       if (doflush==1) fflush(fp);
 
-      // gettimeofday(&t2, NULL);
       elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;
       elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0; // us to msec
       if (elapsedTime > MAXTIMEMS) {  // exit if exceeded timeout in msec
-        // printf("Time = %5.3f\n",elapsedTime);
-
         printf("Closing %s\n",fname);
         fprintf(fp,"# end\n");
         fflush(fp);
