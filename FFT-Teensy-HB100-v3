@@ -5,17 +5,22 @@
 // 2017-09-10: no false detect indoors in ~ 24 hours
 // by J.Beale 14-SEP-2017  T3.2 96 MHz Faster
 // 09-OCT-2017  added peak frequency
+// 10-OCT-2017  change to FFT256
 
 #include <Audio.h>
 
 AudioInputAnalog         adc1;       
-AudioAnalyzeFFT1024      myFFT;
-// AudioAnalyzeFFT256      myFFT;
+// AudioAnalyzeFFT1024      myFFT;
+AudioAnalyzeFFT256      myFFT;
 AudioConnection  patchCord1(adc1, myFFT);
 
-#define FBINS 512    // full length of frequency data from 1024-point FFT
-// #define FBINS 128    // full length of frequency data from 256-point FFT
+// #define FBINS 512    // full length of frequency data from 1024-point FFT
+#define FBINS 128    // full length of frequency data from 256-point FFT
+#define MAXPF 128     // maximum allowed peak frequency (max expected realistic velocity)
+#define ADCFREQ (11025/2)  // ADC & DAC sample rate in Hz
+#define FSEQCNT (3)   // minimum number of nonzero frequency peaks in a row to count as motion
 
+#define VERSION "# Doppler FFT Motion-Detect on Teensy 3.2 FFT256 ver 1.68 14-OCT-2017"
 
 #define SERPORT Serial1
 
@@ -30,7 +35,7 @@ AudioConnection  patchCord1(adc1, myFFT);
 #define DECRATIO (8)    // decimation ratio (data processed / printed out)
 #define MINRUN (15)    // minimum # of cycles of motion before validated (displayed)
 #define MINSTOP (20)    // max # of cycles of no-motion before reset
-#define CB_LEN (20)    // number of elements in circular buffer
+#define CB_LEN (4)    // number of elements in circular buffer
 
 #define UC unsigned char
 #define UI unsigned int
@@ -75,6 +80,7 @@ int didx=0;   // index into history buffer
 UI ms; // current value of milliseconds
 UI oldms = 0;  // previous loop value of msec
 UI dt;     // delta-time (loop time) in msec
+UI fpkCount = 0;  // how many non-zero peak frequency detects in a row
 
 
 int sumAlarm;  // sum of all alarm[i] bins, 0 if no alarm
@@ -200,6 +206,8 @@ int pop()  // pop one element from rear of buffer. Returns an INDEX into cbuf[i]
 } // pop()
 
 // =========================================================================
+// updateAvgFull() returns index of maximum frequency found (which is 0 if nothing exceeds the average)
+
 UI updateAvgFull(float frac) {
 
 UI i;  // loop index
@@ -234,15 +242,18 @@ UI idxMax;  // index of maximum frequency
       if (!motion) {  // if there is no motion detected currently, update long-term average
         favg[i] = FSTEP(favg[i], fv, frac);  
       }
-      fsignal = MAX( (fv - (favg[i] + FFTHRESH)) , 0);  // fsignal is always 0 or +.  0 if current value at or below average
+      fsignal = fv - (favg[i] + FFTHRESH/2);  // subtract off long-term average curve from current spectral value. Result may be negative
+      if (i < MAXPF) {
+        if (fsignal > fMax) {    // look for a new peak
+          fMax = fsig[i];
+          idxMax = i;
+        }
+      }
+      fsignal = MAX( (fsignal - (FFTHRESH/2)) , 0);  // fsignal is always 0 or +.  0 if current value at or below average
       fSigTotal += fsignal;            // total detected signal (0 if all at or below average)
       
       fCenter += fsignal * ((float)i + 0.5);  // sum over all spectrum to find center-of-mass
      
-      if (fsignal > fMax) {   // have we found a new maximum?
-        fMax = fsig[i];
-        idxMax = i;
-      }
       fsig[i] = fsignal;  // replace original FFT data with "detected signal"
   } // end for (i..)
 
@@ -288,10 +299,13 @@ int i;
 
   AudioMemory(12);
   AudioNoInterrupts();
-  setDACFreq(11025);
+  
+  setDACFreq(ADCFREQ);
+  myFFT.averageTogether(1);  // how many FFT batches to average together
+  myFFT.windowFunction(AudioWindowHanning256); // the default
+  
   // setDACFreq(25245); // 11.025 kHz * (24.1/10.525) = 25.245 kHz
   // myFFT.windowFunction(AudioWindowHanning1024);
-  // myFFT.windowFunction(AudioWindowHanning256); // the default
   // analogReference(EXTERNAL);  // set ADC voltage reference to 3.3V external
   AudioInterrupts();
   
@@ -307,9 +321,10 @@ int i;
 
   // SERPORT.print("# log(10.0) = ");
   // SERPORT.println(log(10.0),5);
-  SERPORT.println("count,freq,spread,strength");
-  SERPORT.println("# Doppler FFT Motion-Detect on Teensy 3.2 ver 1.62 14-SEP-2017");
-  
+  SERPORT.println("count,fpeak,avfreq,spread,strength");
+  //  SERPORT.println("# Doppler FFT Motion-Detect on Teensy 3.2 FFT256 ver 1.65 10-OCT-2017");
+  SERPORT.println(VERSION);
+
   digitalWrite(LED1, false);
   digitalWrite(OUT_ALARM, false);
   runLength = 0;
@@ -357,7 +372,9 @@ void loop() {
     // "motion detected" when (sigMag > 0)
     // float sigMag = LOGSCALE * MAX(-0.5+log(fSigTotal), 0);  // magnitude in dB
     float sigMag = LOGSCALE * MAX(-0.5+log(fSigSM), 0);  // * LOGSCALE gives magnitude in dB
-
+    if (sigMag < 20) idxMax = 0;  // fPeak is too noisy when signal too low
+    if (idxMax > 0) fpkCount++;   // how many non-zero peak frequencies we've seen in a row
+     else fpkCount = 0;
     a.len = runLength; // how many time slices since motion
     a.fPeak = idxMax; // index of peak frequency
     a.fCenter = fCenterSM2;  // center of mass of detected signal in freq spectrum
@@ -368,7 +385,7 @@ void loop() {
     // SERPORT.print(buf); // DEBUG: show run,stop counts
     // SERPORT.println();
     
-    motion = (sigMag > 0) & (fCenter > 0);
+    motion = (sigMag > 0) & (fCenter > 0) & (fpkCount >= FSEQCNT);  // motion detect: big enough signal, nonzero avg.freq, enough inst.peaks
     if (motion) {
       stopLength = 0;  // stopLength is 0 immediately upon any motion
       runLength++;     // count how many timesteps this "run" of motion lasts
@@ -411,7 +428,8 @@ void loop() {
         freqCount++;
       }
       
-      sprintf(buf,"%03d,%03d,%5.2f,%5.2f,%5.2f", cbuf[idx].len, cbuf[idx].fPeak, cbuf[idx].fCenter,
+      // sprintf(buf,"%03d,%03d,%5.2f,%5.2f,%5.2f", cbuf[idx].len, cbuf[idx].fPeak, cbuf[idx].fCenter,
+      sprintf(buf,"%03d,%03d,%5.2f,%5.2f,%5.2f", printLen, cbuf[idx].fPeak, cbuf[idx].fCenter,
           cbuf[idx].moment, cbuf[idx].mag);      
       SERPORT.print(buf);  //  center of mass of spectrum
       SERPORT.println();  // blank line separates events
@@ -425,7 +443,7 @@ void loop() {
           avgAmp /= freqCount;      // convert amplitude sum to average
         }
         SERPORT.println("# maxRun, domStep, freqCount, domFreq, freqAvg, maxAmp, avgAmp");
-        sprintf(buf,"## %d, %d, %d, %5.2f, %5.2f, %5.2f, %5.2f", maxRun, domStep, freqCount, domFreq, freqAvg, maxAmp, avgAmp);
+        sprintf(buf,"## %03d, %03d, %03d, %5.2f, %5.2f, %5.2f, %5.2f", maxRun, domStep, freqCount, domFreq, freqAvg, maxAmp, avgAmp);
         SERPORT.print(buf);
         SERPORT.println();  // blank line separates events
         maxRun = 0;  // runlength of motion event
@@ -439,7 +457,6 @@ void loop() {
         runLength = 0;  // ONLY PLACE runlength reset: after event printout finished
       }
     }
-
 
     digitalWrite(OUT_ALARM, motion);
     // digitalWrite(LED1, motion);  // onboard LED current adds noise?    
