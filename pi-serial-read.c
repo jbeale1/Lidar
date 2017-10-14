@@ -1,6 +1,6 @@
 //  =================================================
 //  This program runs on the Raspberry Pi
-//  Purpose: Log doppler data via serial port and save to file
+//  Purpose: Log serial doppler data. Save to file with TOD timestamp to milliseconds.
 //  for Teensy 3.2 sending through FTDI-USB serial to Raspberry Pi
 //
 //  There is an apparent bug causing USB timeout after long (hours?) periods of
@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <time.h>       /* time_t, struct tm, time, localtime, strftime */
 #include <sys/time.h>   // gettimeofday()
+#include <math.h>
 
 #define MAXTIMEMS (300000)   // quit after this long
 #define MAXLINE 100    // longest legal # of characters coming in serial port before a newline
@@ -105,6 +106,7 @@ int main(int argc, char** argv) {
   char fname[120];
   char tod[80];
   int doflush = 0;
+  int millisec;
 
 gettimeofday(&t1, NULL);  // start time
 if ((tm = localtime(&t1.tv_sec)) == NULL) return -1;
@@ -152,15 +154,27 @@ set_blocking (fd, 1);                // set blocking
 
       // printf("Line: %s\n",buf);
 
-      time (&rawtime);
-      timeinfo = localtime (&rawtime);
-      strftime (tbuf,80,"%F %T",timeinfo);
+      //time (&rawtime);
+      //timeinfo = localtime (&rawtime);
+      //strftime (tbuf,80,"%F %T",timeinfo);
 
-      // fprintf(fp,"%s, %d, %s",tbuf,strlen(buf),buf);   // write to file
-      fprintf(fp,"%s, %s",tbuf,buf);   // write to file
-      if (doflush==1) fflush(fp);
 
       gettimeofday(&t2, NULL);
+      millisec = lrint(t2.tv_usec/1000.0); // round to nearest millisec
+      if (millisec>=1000) { // Allow for rounding up to nearest second
+        millisec -=1000;
+        t2.tv_sec++;
+      }
+
+      timeinfo = localtime(&t2.tv_sec);
+      strftime (tbuf, 80, "%Y-%m-%d %H:%M:%S",timeinfo);
+      fprintf(fp,"%s.%03d, %s",tbuf,millisec,buf);   // write to file
+
+      // fprintf(fp,"%s, %d, %s",tbuf,strlen(buf),buf);   // write to file
+      // fprintf(fp,"%s, %s",tbuf,buf);   // write to file
+      if (doflush==1) fflush(fp);
+
+      // gettimeofday(&t2, NULL);
       elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;
       elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0; // us to msec
       if (elapsedTime > MAXTIMEMS) {  // exit if exceeded timeout in msec
