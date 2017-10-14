@@ -9,7 +9,7 @@
 //  [49298.492956] ftdi_sio ttyUSB0: usb_serial_generic_read_bulk_callback - urb stopped: -32
 //  [49476.022827] ftdi_sio ttyUSB0: usb_serial_generic_read_bulk_callback - urb stopped: -32
 //
-//  J.Beale 02-OCT-2017
+//  J.Beale 14-OCT-2017
 
 #include <stdio.h>
 #include <errno.h>
@@ -21,10 +21,8 @@
 #include <sys/time.h>   // gettimeofday()
 
 #define MAXTIMEMS (300000)   // quit after this long
-#define MAXLINE 100    // longest legal # of characters coming in serial port be                                                                             fore a newline
+#define MAXLINE 100    // longest legal # of characters coming in serial port before a newline
 #define BASENAME "/mnt/usb1/doppler/log_"   // working directory & file prefix
-
-
 
 #define error_message printf
 
@@ -124,11 +122,11 @@ fd = open (portname, O_RDWR | O_NOCTTY | O_SYNC);
 
 if (fd == 0)
 {
-        error_message ("error %d opening %s: %s", errno, portname, strerror (err                                                                             no));
+        error_message ("error %d opening %s: %s", errno, portname, strerror (errno));
         return;
 }
 
-set_interface_attribs (fd, B57600, 0);  // set speed to 57600 bps, 8N1 (no parit                                                                             y)
+set_interface_attribs (fd, B57600, 0);  // set speed to 57600 bps, 8N1 (no parity)
 // set_blocking (fd, 0);                // set no blocking
 set_blocking (fd, 1);                // set blocking
 
@@ -146,11 +144,11 @@ set_blocking (fd, 1);                // set blocking
            buf[i++] = c;
         }
     } while (c != 0x0a && n > 0);
-    buf[i] = 0x00;  // null-terminate. Last chars either '0d 0a' but sometimes '                                                                             0a 0a' (!?)
+    buf[i] = 0x00;  // null-terminate. Last chars either '0d 0a' but sometimes '0a 0a' (!?)
 
     if (i > 1) { // ignore single-character lines (eg. single '0a')
 
-      if ( (buf[0]=='#') && (buf[1]=='#') ) doflush=1;  // write to file at end                                                                              of each event
+      if ( (buf[0]=='#') && (buf[1]=='#') ) doflush=1;  // write to file at end of each event
 
       // printf("Line: %s\n",buf);
 
@@ -183,8 +181,6 @@ set_blocking (fd, 1);                // set blocking
         if (fp == NULL) return -1;
       } // end if (i > 1)
     }
-    // c = 0x20;  // ASCII space
-    // write (fd, &c, 1);  // write one char. attempted bugfix for fake FTDI, but doesn't help
   } // while()
 
 } // main
