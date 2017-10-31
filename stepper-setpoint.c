@@ -9,8 +9,8 @@
 
 #define ANALOG_IN A0    // potentiometer input
 #define STEPFULLREV (8000)       // this many steps in 1 full revolution of stepmotor
+#define IDLE_LIMIT (3500)  // after this many loops, move by changing the "idle" setpoing
 #define MINDELTA (0.15)  // minimum stepsize that's "real" (debounce / avoid dither)
-#define IDLE_LIMIT (3500)  // after no motion for this many loops, move back & forth
 #define IDLERANGE (4000) // range of motion in counts during idle
 #define IDLESPEED (0.2) // speed of motion in counts per cycle during idle
 
@@ -75,6 +75,7 @@ void loop()
     stepper.run();
 
     if (idleTime > IDLE_LIMIT) {
+      digitalWrite(led, 0);
       idlePos+= idleInc;
       if (idleIC++ > IDLERANGE) {
         idleInc = -idleInc;
@@ -86,7 +87,8 @@ void loop()
 
     stepper.run();
     if (abs(stepper.distanceToGo()) < 6) {
-      digitalWrite(led, 1);  // turn on LED when setpoint reached
+      if (idleTime < IDLE_LIMIT)
+        digitalWrite(led, 1);  // turn on LED when setpoint reached and not IDLE mode
     } else {
       digitalWrite(led, 0);
     }
@@ -96,11 +98,13 @@ void loop()
       stepper.run();
       delayMicroseconds(100);
     }
-    
+/*    
     if ((loopCount % 100) == 0) {
       Serial.print(idleTime);  // debug output showing idle time
       Serial.print(", ");  // debug output showing idle time
       Serial.print(idlePos);  // debug output showing idle time
       Serial.println();  // debug output showing idle time
     }
+    */
+    
 }
