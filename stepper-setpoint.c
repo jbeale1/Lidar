@@ -9,6 +9,8 @@
 
 #define ANALOG_IN A0    // potentiometer input
 #define STEPFULLREV (8000)       // this many steps in 1 full revolution of stepmotor
+#define MAXSPEED (1500)    // max allowed rotation speed: how many steps per (second?) 
+#define MAXACC (2500)    // max allowed rotation acceleration: how many steps per second per second
 #define IDLE_LIMIT (3500)  // after this many loops, move by changing the "idle" setpoing
 #define MINDELTA (0.15)  // minimum stepsize that's "real" (debounce / avoid dither)
 #define IDLERANGE (4000) // range of motion in counts during idle
@@ -27,8 +29,8 @@ void setup()
   pinMode(led, OUTPUT);  
   stepper.setEnablePin(8);  // to control stepper driver enable
   stepper.setPinsInverted(false, false, true);  // enable is low true (high = disable)
-  stepper.setMaxSpeed(1500);
-  stepper.setAcceleration(1500);  // steps per second per second
+  stepper.setMaxSpeed(MAXSPEED);
+  stepper.setAcceleration(MAXACC);  // steps per second per second
   stepper.moveTo(oldPos);
   Serial.begin(57600);
 }
