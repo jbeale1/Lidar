@@ -15,8 +15,12 @@
 #include <math.h>       // lrint()
 #include <stdbool.h>    // type bool
 
-#define SIGIN 22
+// #define SIGIN 22
+#define SIGIN 17
 #define BASENAME "/mnt/usb1/RCWL/log_"   // working directory & file prefix
+#define STILLCAP "echo 'still' > /home/pi/pikrellcam/www/FIFO" //  command to capture still
+#define VIDCAP "echo 'record on 4 4' > /home/pi/pikrellcam/www/FIFO"
+#define SENDALARM "/home/pi/pikrellcam/scripts/jpb-alarm rp8 alarm"
 #define TRUE (1)
 #define FALSE (0)
 
@@ -120,10 +124,13 @@ int retval = 0;
         fprintf(fp,"%s.%03d, ",tbuf,millisec);   // write to file including milliseconds
         if (g_level == 0) { // returned to zero; end of motion event
            deltaSec = (g_tick-lastTick) / 1E6;  // ticks in microseconds
+           fprintf(fp,"%d, %4.1f\n", g_level, deltaSec);
         } else {  // start of new motion event
            deltaSec = deltaT.tv_sec + (deltaT.tv_usec/1.0E6);
+           fprintf(fp,"%d,     %4.1f\n", g_level, deltaSec);
+           retval = system(STILLCAP);  // command to trigger local capture of still image
+           retval |= system(SENDALARM); // notify other device of motion
         }
-        fprintf(fp,"%d, %4.1f\n", g_level, deltaSec);
         lastTick = g_tick;
         fflush(fp);  // make sure it's written to the file
 /*
