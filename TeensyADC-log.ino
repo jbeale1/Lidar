@@ -10,6 +10,10 @@
 #define SAMPLES (100)      // how many samples to combine for pp, std.dev statistics
 #define RAWAVG 225  // how many samples to average together before stats step
 
+#define BXAVG 3    // how many samples in boxcar for rolling average
+
+unsigned int idx = 0;  // index into boxcar average
+float rs[BXAVG];   // boxcar averaging
 
 const int analogInPin = A2;  // Analog input pin A1 (Teensy3 pin 16)
 const int LED1 = 13;         // output LED connected on Arduino digital pin 13
@@ -31,6 +35,7 @@ void setup() {    // ===========================================================
       Serial.print("# Teensy 3.2 ADC 21-MAR-2018 JPB  Sample Avg: ");
       Serial.println(SAMPLES);
 } // ==== end setup() ===========
+
 
 void loop() {  // ================================================================ 
      
@@ -74,10 +79,17 @@ void loop() {  // ==============================================================
       float sec = millis() / 1000.0;
       float datAvg = (1.0*datSum)/n;
       float db = 20 * log10(stdev);  // not necessarily "real" dB
+      rs[idx] = db;
+      idx = (idx+1) % BXAVG;
+      float dbavg = 0;
+      for (int i=0; i<BXAVG; i++) {
+        dbavg += rs[i];
+      }
+      dbavg /= BXAVG;
       Serial.print(sec,1);  // elapsed seconds
       Serial.print(" , ");     
       Serial.print(datAvg,1); // Average
      // Serial.print(" Offset: ");  Serial.print(datAvg - EXPECTED,2); // Offset
       Serial.print(" , ");  Serial.print(sMax-sMin); // Pk-Pk amplitude
-      Serial.print(" , ");  Serial.println(db,1); // log amplitude of signal
+      Serial.print(" , ");  Serial.println(dbavg,1); // log amplitude of signal
 } // end main()  =====================================================
