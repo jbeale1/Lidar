@@ -1,12 +1,8 @@
-// Analog input test for Teensy 3.0    Oct 4 2012 - Feb 26 2014 J.Beale
-// Setup: https://picasaweb.google.com/109928236040342205185/Electronics#5795546092126071650
-// mods for low-freq audio input 21-MAR-2018 J.Beale
+// Teensy 3.2: Low-freq audio input 3:28 pm 24-MAR-2018 J.Beale
 
 #define VREF (3.266)         // ADC reference voltage (= power supply)
-// #define VINPUT (2.176)       // ADC input voltage from resistive divider to VREF
 #define ADCMAX (65535)       // maximum possible reading from ADC
 #define EXPECTED (ADCMAX*(VINPUT/VREF))     // expected ADC reading
-// #define SAMPLES (20000)      // how many samples to combine for pp, std.dev statistics
 #define SAMPLES (100)      // how many samples to combine for pp, std.dev statistics
 #define RAWAVG 225  // how many samples to average together before stats step
 
